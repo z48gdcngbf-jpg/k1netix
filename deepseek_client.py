@@ -14,6 +14,7 @@ Set DEEPSEEK_API_KEY in your environment or .env file.
 from __future__ import annotations
 import json
 import os
+import re
 import time
 from typing import Optional
 
@@ -32,7 +33,7 @@ You are given:
 1. A clash group from a BIM coordination model (BCF issues grouped by discipline and location)
 2. Relevant building regulation clauses retrieved from a RAG system
 
-Your task is to perform a clause-by-clause compliance check and constructability assessment, when clash violates regulation, specify which regulation is used from the documents given.
+Your task is to perform a clause-by-clause compliance check and constructability assessment.
 
 IMPORTANT RULES:
 - Only reference regulations that were explicitly provided in the context
@@ -154,8 +155,6 @@ class DeepSeekClient:
     def token_usage(self) -> int:
         return self.total_tokens_used
 
-
-import re  # needed for fence stripping above
 
 
 # ── Prompt builder ─────────────────────────────────────────────────────────────
