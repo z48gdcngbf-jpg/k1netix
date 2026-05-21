@@ -1418,6 +1418,25 @@ def render_layer4_ui(layer3_result: dict):
             )
 
             disc_groups = _group_prerfis_by_route(prerfi_list, emails)
+            # ── DEBUG: see what's going wrong with routing
+            with st.expander("🔍 Routing debug"):
+                st.write("**Emails dict (from Contacts tab):**")
+                st.json({k: v for k, v in emails.items() if v})
+                st.write("**Resolved route for each Pre-RFI:**")
+                debug_rows = []
+                for p in prerfi_list:
+                    d = p["data"]
+                    rc = _resolve_route_code(d)
+                    debug_rows.append({
+                        "RFI #":            d.get("rfi_number", ""),
+                        "_route_discipline": d.get("_route_discipline", ""),
+                        "_discipline":      d.get("_discipline", ""),
+                        "discipline_label": d.get("discipline_label", ""),
+                        "Resolved route_code": rc,
+                        "Email found":      emails.get(rc, "❌ not in emails dict"),
+                    })
+                st.dataframe(pd.DataFrame(debug_rows), hide_index=True, use_container_width=True)
+                
             route_rows = []
             for key, group in disc_groups.items():
                 if key == "__unassigned__":
