@@ -1,5 +1,6 @@
 streamlit
 pandas
+numpy
 openpyxl
 openai
 chromadb
@@ -8,7 +9,7 @@ pymupdf
 pdfplumber
 python-docx
 certifi
-numpy
 scikit-learn
 xgboost
 hdbscan
+pysqlite3-binary

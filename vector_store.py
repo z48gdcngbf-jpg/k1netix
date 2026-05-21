@@ -6,6 +6,9 @@ Uses sentence-transformers for local embeddings (no API key needed).
 Embedding model: all-MiniLM-L6-v2 (fast, good quality, 384-dim)
 Swap to a larger model for higher accuracy (e.g. all-mpnet-base-v2).
 """
+__import__('pysqlite3')
+import sys
+sys.modules['sqlite3'] = sys.modules.pop('pysqlite3')
 
 from __future__ import annotations
 import json
