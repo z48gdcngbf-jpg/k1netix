@@ -12,7 +12,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 import pandas as pd
- 
+from layer4 import render_layer4_ui
+
 from doc_ingester    import ingest_document, ingest_multiple
 from vector_store    import (upsert_chunks, query, collection_stats,
                               list_documents, delete_document)
@@ -1454,4 +1455,4 @@ def _export_layer3_json(result: dict) -> str:
 
 render_layer2_ui(st.session_state.get("bcf_json", {}))
 render_layer3_ui(st.session_state.get("layer2_result", {}))
- 
+render_layer4_ui(st.session_state.get("layer3_result", {}))
