@@ -239,6 +239,95 @@ def _get_deepseek_key() -> str:
     return _secret_value("DEEPSEEK_API_KEY", "deepseek.api_key", default="")
 
 
+DISCIPLINE_ALIASES = {
+    "mechanical": "MECH", "mech": "MECH", "hvac": "MECH", "ventilation": "MECH",
+    "electrical": "ELEC", "elec": "ELEC", "cable": "ELEC",
+    "plumbing": "PLMB", "plumb": "PLMB", "pipe": "PLMB", "drainage": "PLMB", "water": "PLMB",
+    "structural": "STR", "structure": "STR", "str": "STR", "beam": "STR", "column": "STR", "slab": "STR",
+    "architecture": "ARCH", "architectural": "ARCH", "arch": "ARCH", "wall": "ARCH", "window": "ARCH", "door": "ARCH",
+    "civil": "CIVIL", "site": "CIVIL",
+    "fire protection": "FP", "fire safety": "FP", "fire": "FP", "sprinkler": "FP",
+    "mep": "MECH",
+}
+
+
+def _discipline_label(code: str) -> str:
+    return DISCIPLINES.get(code, {}).get("label", code or "Unassigned")
+
+
+def _discipline_code(value) -> str:
+    if value in (None, ""):
+        return ""
+    raw = str(value).strip()
+    upper = raw.upper()
+
+    for code in DISCIPLINES:
+        if upper == code or upper.startswith(code + "-") or ("-" + code) in upper:
+            return code
+
+    lower = raw.lower()
+    for alias, code in DISCIPLINE_ALIASES.items():
+        if alias in lower:
+            return code
+    return ""
+
+
+def _resolve_route_code(data: dict, cluster: Optional[dict] = None) -> str:
+    cluster = cluster or {}
+    issues = cluster.get("issues", []) or []
+    first_issue = issues[0] if issues else {}
+    disc_info = first_issue.get("_discipline") or {}
+
+    candidates = [
+        data.get("_route_discipline"),
+        data.get("specialist_discipline"),
+        data.get("_discipline"),
+        data.get("discipline_label"),
+        data.get("clash_pair"),
+        cluster.get("discipline"),
+        cluster.get("discipline_label"),
+        cluster.get("clash_pair"),
+        disc_info.get("primary"),
+        disc_info.get("clash_pair"),
+        data.get("cluster_label"),
+        data.get("primary_concern"),
+    ]
+    for candidate in candidates:
+        code = _discipline_code(candidate)
+        if code:
+            return DISC_EMAIL_MAP.get(code, code)
+    return ""
+
+
+def apply_prerfi_routing(data: dict, emails: dict, cluster: Optional[dict] = None) -> dict:
+    routed = dict(data)
+    route_code = _resolve_route_code(routed, cluster)
+    routed["_route_discipline"] = route_code
+    if route_code:
+        routed["discipline_label"] = routed.get("discipline_label") or _discipline_label(route_code)
+        routed["specialist_discipline"] = routed.get("specialist_discipline") or _discipline_label(route_code)
+        routed["assigned_to"] = f"{_discipline_label(route_code)} Specialist"
+        routed["assigned_email"] = emails.get(route_code, "")
+    else:
+        routed["assigned_to"] = routed.get("assigned_to") or "Unassigned Specialist"
+        routed["assigned_email"] = ""
+    return routed
+
+
+def _group_prerfis_by_route(prerfi_list: list[dict], emails: dict) -> dict[str, list[dict]]:
+    groups: dict[str, list[dict]] = {}
+    for p in prerfi_list:
+        d = p["data"]
+        route_code = _resolve_route_code(d)
+        recipient = emails.get(route_code, "") if route_code else ""
+        d["_route_discipline"] = route_code
+        d["assigned_email"] = recipient
+        d["assigned_to"] = f"{_discipline_label(route_code)} Specialist" if route_code else "Unassigned Specialist"
+        key = route_code if recipient else "__unassigned__"
+        groups.setdefault(key, []).append(p)
+    return groups
+
+
 def _summarise_uploaded_template(uploaded) -> str:
     """Extract visible labels from an uploaded template so the LLM follows it."""
     if not uploaded:
@@ -356,6 +445,7 @@ PRE_RFI_SYSTEM_PROMPT = """You are K1netix, a BIM coordination assistant draftin
 Write clear, professional construction coordination language. Use only the evidence provided.
 Do not invent missing GUIDs, locations, regulation clauses, dates, or project IDs.
 Preserve traceability fields exactly; only improve narrative fields.
+Choose specialist_discipline from: Structural, Architecture, Mechanical, Electrical, Plumbing, Fire Protection, Civil.
 Return valid JSON only, with concise but informative values suitable for an Excel Pre-RFI template."""
 
 
@@ -404,6 +494,10 @@ def enhance_prerfi_with_llm(data: dict, cluster: dict, template_summary: str = "
     api_key = _get_deepseek_key()
 
     if not api_key or DeepSeekClient is None:
+        route_code = _resolve_route_code(enriched, cluster)
+        enriched["_route_discipline"] = route_code
+        if route_code and not enriched.get("specialist_discipline"):
+            enriched["specialist_discipline"] = _discipline_label(route_code)
         enriched["_llm_drafting"] = "fallback"
         return enriched
 
@@ -433,9 +527,17 @@ def enhance_prerfi_with_llm(data: dict, cluster: dict, template_summary: str = "
             else:
                 enriched[key] = _s(val)
 
+        route_code = _resolve_route_code(enriched, cluster)
+        enriched["_route_discipline"] = route_code
+        if route_code and not enriched.get("specialist_discipline"):
+            enriched["specialist_discipline"] = _discipline_label(route_code)
         enriched["_llm_drafting"] = "deepseek"
         return enriched
     except Exception as exc:
+        route_code = _resolve_route_code(enriched, cluster)
+        enriched["_route_discipline"] = route_code
+        if route_code and not enriched.get("specialist_discipline"):
+            enriched["specialist_discipline"] = _discipline_label(route_code)
         enriched["_llm_drafting"] = "fallback"
         existing = enriched.get("notes", "")
         warning = f"LLM drafting fallback used: {exc}"
@@ -507,8 +609,8 @@ def extract_prerfi_data(cluster: dict, rfi_number: str, project_name: str,
     )
 
     # Discipline
-    disc_code  = cluster.get("discipline","") or ""
-    disc_label = DISCIPLINES.get(disc_code, {}).get("label", disc_code)
+    disc_code  = cluster.get("discipline","") or disc_info.get("primary", "") or ""
+    disc_label = cluster.get("discipline_label") or DISCIPLINES.get(disc_code, {}).get("label", disc_code)
     disc_conf  = disc_info.get("confidence", 0) or 0
     disc_conf_str = f"{round(disc_conf * 100, 1)}%" if disc_conf else ""
 
@@ -549,7 +651,7 @@ def extract_prerfi_data(cluster: dict, rfi_number: str, project_name: str,
         "clash_coordinates":        _s(coords),
         "cluster_size":             len(issues),
         "cluster_label":            _s(cluster.get("cluster_label","")),
-        "clash_pair":               _s(disc_info.get("clash_pair","")),
+        "clash_pair":               _s(disc_info.get("clash_pair","") or cluster.get("clash_pair", "")),
 
         # Section 3
         "applicable_codes":         codes,
@@ -706,6 +808,48 @@ def build_xlsx_output(prerfi_list: list[dict], template_bytes: Optional[bytes] =
         cell.alignment = Alignment(wrap_text=True, vertical="top")
 
     def _fill_form(ws, d: dict):
+        clash_description = "\n".join(x for x in [
+            d.get("clash_description", ""),
+            f"Source issue title(s): {d.get('issue_titles','')}",
+            f"Affected elements: {d.get('element_a_type','Element A')} {d.get('element_a_guid','')} / {d.get('element_b_type','Element B')} {d.get('element_b_guid','')}",
+            f"Location: {d.get('floor_zone','not provided')} | Coordinates: {d.get('clash_coordinates','not provided')}",
+            f"Source tool: {d.get('clash_source_tool','')} | BCF GUID(s): {d.get('bcf_topic_guid','')}",
+        ] if _s(x).strip() and not _s(x).endswith(': '))
+
+        reasoning = "\n\n".join(x for x in [
+            f"Primary concern: {d.get('primary_concern','')}",
+            f"Compliance status: {d.get('compliance_status','')} | AI certainty: {d.get('llm_certainty','')} | Regulation match quality: {d.get('regulation_match_quality','')}",
+            f"Applicable code/standard: {d.get('applicable_codes','')}",
+            f"Clause/section reference: {d.get('clause_references','')}",
+            f"Regulation quote/evidence: {d.get('regulation_quote','')}",
+            f"Compliance summary: {d.get('compliance_summary','')}",
+            f"Constructability assessment: {d.get('constructability_assessment','')}",
+            f"Life-safety related: {d.get('life_safety_related','')}",
+        ] if _s(x).strip() and not _s(x).endswith(': '))
+
+        solution = "\n\n".join(x for x in [
+            f"Recommended action: {d.get('recommended_action','')}",
+            f"Suggested solution option(s): {d.get('suggested_solutions','')}",
+            f"Responsible specialist: {d.get('specialist_discipline') or d.get('discipline_label','')}",
+            f"Assigned contact: {d.get('assigned_email','not assigned')}",
+            f"Response required by: {d.get('response_required_by','')}",
+            f"Data gaps to verify: {d.get('data_gaps','')}",
+        ] if _s(x).strip() and not _s(x).endswith(': '))
+
+        reviewer_packet = "\n".join(x for x in [
+            f"Prepared by: {d.get('prepared_by','K1netix AI')}",
+            f"Routing discipline: {_discipline_label(d.get('_route_discipline',''))}",
+            f"Assigned to: {d.get('assigned_to','')}",
+            f"Assigned email: {d.get('assigned_email','')}",
+            f"Priority: {d.get('priority_band','')} (score {d.get('priority_score','')})",
+            f"Noise filter result: {d.get('noise_filter_result','')}",
+            f"Discipline confidence: {d.get('discipline_confidence','')}",
+            f"Traceability ID: {d.get('traceability_id','')}",
+            f"Cluster label: {d.get('cluster_label','')}",
+            f"Clash pair: {d.get('clash_pair','')}",
+            f"Notes: {d.get('notes','')}",
+        ] if _s(x).strip() and not _s(x).endswith(': '))
+
         values = {
             "D7": d.get("project_name", ""),
             "C8": d.get("project_location", ""),
@@ -730,18 +874,9 @@ def build_xlsx_output(prerfi_list: list[dict], template_bytes: Optional[bytes] =
             "B24": d.get("regulation_quote", ""),
             "C27": "Yes" if str(d.get("life_safety_related", "")).lower() in {"yes", "true", "possibly"} else "No",
             "F27": d.get("regulation_match_quality", ""),
-            "B31": d.get("clash_description", ""),
-            "B35": "\n\n".join(x for x in [
-                f"Primary concern: {d.get('primary_concern','')}",
-                f"Compliance status: {d.get('compliance_status','')}",
-                f"Compliance summary: {d.get('compliance_summary','')}",
-                f"Constructability assessment: {d.get('constructability_assessment','')}",
-            ] if x.strip() and not x.endswith(': ')),
-            "B41": "\n\n".join(x for x in [
-                f"Recommended action: {d.get('recommended_action','')}",
-                f"Suggested solutions: {d.get('suggested_solutions','')}",
-                f"Specialist required: {d.get('requires_specialist','No')} - {d.get('specialist_discipline','')}",
-            ] if x.strip()),
+            "B31": clash_description,
+            "B35": reasoning,
+            "B41": solution,
             "C44": "No Change / TBC",
             "F44": "TBC",
             "C45": "No Change / TBC",
@@ -760,15 +895,7 @@ def build_xlsx_output(prerfi_list: list[dict], template_bytes: Optional[bytes] =
             "C58": d.get("assigned_email", ""),
             "F58": "",
             "C59": "Requires Human Review",
-            "B61": "\n".join(x for x in [
-                f"Assigned to: {d.get('assigned_to','')}",
-                f"Response required by: {d.get('response_required_by','')}",
-                f"Data gaps: {d.get('data_gaps','')}",
-                f"Notes: {d.get('notes','')}",
-                f"Source issue titles: {d.get('issue_titles','')}",
-                f"Cluster label: {d.get('cluster_label','')}",
-                f"Clash pair: {d.get('clash_pair','')}",
-            ] if x.strip() and not x.endswith(': ')),
+            "B61": reviewer_packet,
             "B65": f"Generated by K1netix -- {datetime.now().strftime('%d %b %Y %H:%M')} -- AI advisory document for human review",
         }
         for ref, value in values.items():
@@ -792,8 +919,15 @@ def build_xlsx_output(prerfi_list: list[dict], template_bytes: Optional[bytes] =
             if ws[ref].fill.fill_type != "solid":
                 ws[ref].fill = PatternFill("solid", fgColor="fff2cc")
 
-        for row in [24,25,26,31,32,33,35,36,37,41,42,43,61,62,63]:
-            ws.row_dimensions[row].height = 48
+        row_heights = {
+            24: 42, 25: 42, 26: 42,
+            31: 68, 32: 68, 33: 68,
+            35: 82, 36: 82, 37: 82,
+            41: 74, 42: 74, 43: 74,
+            61: 72, 62: 72, 63: 72,
+        }
+        for row, height in row_heights.items():
+            ws.row_dimensions[row].height = height
 
     wb = _load_template_wb()
     base = wb.active
@@ -815,8 +949,8 @@ def build_xlsx_output(prerfi_list: list[dict], template_bytes: Optional[bytes] =
         ws.title = name
         _fill_form(ws, d)
 
-    # Register sheet sits first for routing, while each following sheet is a full template form.
-    ws_reg = wb.create_sheet("Pre-RFI Register", 0)
+    # Keep the filled form sheets first, so the workbook opens like the uploaded template.
+    ws_reg = wb.create_sheet("Pre-RFI Register")
     ws_reg.freeze_panes = "A3"
     headers = ["#", "RFI Number", "Status", "Discipline", "Assigned Email", "Priority", "Cluster", "Recommended Action", "Response Due"]
     ws_reg.merge_cells("A1:I1")
@@ -851,6 +985,33 @@ def build_xlsx_output(prerfi_list: list[dict], template_bytes: Optional[bytes] =
             elif col == 6:
                 c.fill = PatternFill("solid", fgColor=PRIORITY_COLORS.get(d.get("priority_band", ""), "ffffff"))
         ws_reg.row_dimensions[idx + 2].height = 42
+
+    ws_app = wb.create_sheet("Evidence Appendix")
+    app_headers = ["RFI Number", "Field", "Value"]
+    for col, header in enumerate(app_headers, 1):
+        c = ws_app.cell(1, col, header)
+        c.font = Font(name="Arial", bold=True, color="ffffff")
+        c.fill = PatternFill("solid", fgColor="1a1d27")
+        c.alignment = Alignment(horizontal="center", wrap_text=True)
+    ws_app.column_dimensions["A"].width = 18
+    ws_app.column_dimensions["B"].width = 30
+    ws_app.column_dimensions["C"].width = 100
+    app_row = 2
+    appendix_skip = {"_generated_at"}
+    for p in prerfi_list:
+        d = p["data"]
+        for key, value in d.items():
+            if key in appendix_skip:
+                continue
+            ws_app.cell(app_row, 1, d.get("rfi_number", ""))
+            ws_app.cell(app_row, 2, FIELD_LABELS.get(key, key))
+            ws_app.cell(app_row, 3, _s(value))
+            for col in range(1, 4):
+                c = ws_app.cell(app_row, col)
+                c.border = border
+                c.alignment = Alignment(wrap_text=True, vertical="top")
+            ws_app.row_dimensions[app_row].height = 34 if len(_s(value)) > 100 else 20
+            app_row += 1
 
     buf = io.BytesIO()
     wb.save(buf)
@@ -1046,7 +1207,7 @@ def render_layer4_ui(layer3_result: dict):
 
     st.markdown("---")
     st.markdown("## 📋 Layer 4 — Pre-RFI Generator & Router")
-    st.caption("Synthesise compliance results → template-style Pre-RFI files → route to responsible professionals")
+    st.caption("Enter contacts first → generate template-style Pre-RFIs → route and send in one workflow")
 
     clusters = layer3_result.get("clusters", [])
     if not clusters:
@@ -1061,19 +1222,18 @@ def render_layer4_ui(layer3_result: dict):
     st.markdown(f"**{len(actionable)}** clusters require Pre-RFIs "
                 f"({n_skip} compliant/skipped)")
 
-    tabs = st.tabs(["⚙️ Generate", "📤 Route & Send", "📒 Records"])
+    tabs = st.tabs(["🧭 Workflow", "📒 Records"])
 
-    # ── Tab 1: Generate ───────────────────────────────────────────────────────
     with tabs[0]:
         default_proj_id = f"PRJ_{datetime.now().strftime('%Y_%m')}_001"
 
-        with st.expander("⚙️ Project Settings", expanded=True):
-            st.caption("These details populate the header cells in the Pre-RFI form template.")
+        with st.expander("1. Project Settings", expanded=False):
+            st.caption("These fields populate the header cells in the Pre-RFI form.")
             c1, c2 = st.columns(2)
             with c1:
                 project_name = st.text_input(
                     "Project Name",
-                    value=st.session_state.get("layer4_project_name","K1netix Project"),
+                    value=st.session_state.get("layer4_project_name", "K1netix Project"),
                     key="l4_proj_name",
                 )
                 project_id = st.text_input(
@@ -1083,13 +1243,13 @@ def render_layer4_ui(layer3_result: dict):
                 )
                 clash_source = st.text_input(
                     "Clash Source Tool",
-                    value=st.session_state.get("layer4_clash_tool","Navisworks"),
+                    value=st.session_state.get("layer4_clash_tool", "Navisworks"),
                     key="l4_clash_tool",
                 )
             with c2:
                 project_location = st.text_input(
                     "Project Location",
-                    value=st.session_state.get("layer4_proj_loc","—"),
+                    value=st.session_state.get("layer4_proj_loc", "—"),
                     key="l4_proj_loc",
                 )
                 bim_version = st.text_input(
@@ -1099,23 +1259,23 @@ def render_layer4_ui(layer3_result: dict):
                 )
                 prepared_by = st.text_input(
                     "Prepared By",
-                    value=st.session_state.get("layer4_prep_by","K1netix AI"),
+                    value=st.session_state.get("layer4_prep_by", "K1netix AI"),
                     key="l4_prep_by",
                 )
 
         st.session_state.update({
             "layer4_project_name": project_name,
-            "layer4_project_id":   project_id,
-            "layer4_clash_tool":   clash_source,
-            "layer4_proj_loc":     project_location,
-            "layer4_bim_ver":      bim_version,
-            "layer4_prep_by":      prepared_by,
+            "layer4_project_id": project_id,
+            "layer4_clash_tool": clash_source,
+            "layer4_proj_loc": project_location,
+            "layer4_bim_ver": bim_version,
+            "layer4_prep_by": prepared_by,
         })
 
-        with st.expander("📁 Pre-RFI Template", expanded=True):
+        with st.expander("2. Pre-RFI Template", expanded=False):
             st.caption(
-                "Upload your Excel Pre-RFI form. The generated workbook will clone this form layout "
-                "and fill the cells with the AI-generated content."
+                "Upload your Excel Pre-RFI template. The generated workbook keeps the form sheet first "
+                "and moves registers/appendix sheets behind it."
             )
             uploaded = st.file_uploader(
                 "Upload Pre-RFI template (.xlsx)",
@@ -1127,110 +1287,23 @@ def render_layer4_ui(layer3_result: dict):
                 st.session_state["layer4_template_bytes"] = uploaded.getvalue()
                 st.session_state["layer4_template_summary"] = _summarise_uploaded_template(uploaded)
                 st.success(f"Template loaded: **{uploaded.name}**")
-                with st.expander("Detected template labels", expanded=False):
-                    st.text(st.session_state["layer4_template_summary"][:3000])
             elif st.session_state.get("layer4_template_bytes"):
                 st.success(f"Template still loaded: **{st.session_state.get('layer4_custom_template_name','uploaded template')}**")
             else:
-                st.info("No upload detected. K1netix will use the local/default Pre-RFI form layout if available.")
+                st.info("No template upload detected. K1netix will use the local/default Pre-RFI form layout if available.")
 
-        llm_key_available = bool(_get_deepseek_key())
-        if llm_key_available and DeepSeekClient is not None:
-            st.success("LLM drafting enabled: narrative Pre-RFI fields will be drafted with DeepSeek.")
-        else:
-            st.warning("LLM drafting key not detected. K1netix will use deterministic fallback drafting.")
-
-        st.markdown("---")
-        st.info(
-            f"Will generate **{len(actionable)}** Pre-RFI form sheet(s). "
-            "Each form keeps the template structure and includes the detailed information shown in the preview."
-        )
-
-        if st.button("⚙️ Generate Template Pre-RFIs", type="primary"):
-            emails = st.session_state.get("layer4_emails", {})
-            prerfi_list = []
-            prog = st.progress(0)
-            status_box = st.empty()
-            template_summary = st.session_state.get("layer4_template_summary", "")
-            template_bytes = st.session_state.get("layer4_template_bytes")
-
-            for i, cluster in enumerate(actionable):
-                label = _s(cluster.get("cluster_label","?"), 50)
-                disc_code = cluster.get("discipline","")
-                email_key = DISC_EMAIL_MAP.get(disc_code, disc_code)
-                assigned_email = emails.get(email_key,"")
-                status_box.info(f"Drafting Pre-RFI [{i+1}/{len(actionable)}]: {label}...")
-
-                rfi_num = f"RFI-{datetime.now().strftime('%Y%m%d')}-{i+1:03d}"
-                data = extract_prerfi_data(
-                    cluster, rfi_num, project_name, assigned_email,
-                    project_location=project_location,
-                    project_id=project_id,
-                    bim_model_version=bim_version,
-                    clash_source_tool=clash_source,
-                )
-                data["prepared_by"] = prepared_by
-                data = enhance_prerfi_with_llm(data, cluster, template_summary)
-                prerfi_list.append({"data": data})
-                prog.progress((i+1)/len(actionable))
-
-            status_box.empty()
-            st.session_state["layer4_prerfi_list"] = prerfi_list
-
-            if prerfi_list:
-                xlsx_bytes = build_xlsx_output(prerfi_list, template_bytes=template_bytes)
-                st.session_state["layer4_xlsx_bytes"] = xlsx_bytes
-                st.success(f"Generated {len(prerfi_list)} template-style Pre-RFI form(s)")
-                st.download_button(
-                    "⬇️ Download Pre-RFI Workbook",
-                    data=xlsx_bytes,
-                    file_name=f"k1netix_prerfi_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                )
-
-        prerfi_list = st.session_state.get("layer4_prerfi_list", [])
-        if prerfi_list:
-            st.markdown("---")
-            st.markdown(f"### Preview — {len(prerfi_list)} Pre-RFIs")
-            rows = []
-            for p in prerfi_list:
-                d = p["data"]
-                rows.append({
-                    "RFI #": d.get("rfi_number",""),
-                    "Discipline": d.get("discipline_label",""),
-                    "Status": d.get("compliance_status",""),
-                    "Priority": d.get("priority_band",""),
-                    "Assigned Email": d.get("assigned_email",""),
-                    "Primary Concern": d.get("primary_concern","")[:90],
-                })
-            st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
-
-            for p in prerfi_list:
-                d = p["data"]
-                with st.expander(f"{d.get('rfi_number','')} — {d.get('cluster_label','')[:70]}"):
-                    for section_title, fields in PRE_RFI_SECTIONS:
-                        st.markdown(f"**{section_title}**")
-                        for field in fields:
-                            label = FIELD_LABELS.get(field, field)
-                            val = d.get(field,"")
-                            if val not in (None, "", []):
-                                st.markdown(f"- **{label}:** {val}")
-
-    # ── Tab 2: Route and send ────────────────────────────────────────────────
-    with tabs[1]:
-        st.markdown("### Contacts, Routing & Email Dispatch")
-        st.caption("Fill the specialist contacts here, confirm the routing, then send the attached Pre-RFI workbook from the same page.")
-
+        st.markdown("### 3. Specialist Contacts")
+        st.caption("Fill contacts before generation so each Pre-RFI is created with its routing email already attached.")
         emails = st.session_state.get("layer4_emails", {d: "" for d in DISCIPLINES})
-        c1, c2 = st.columns(2)
+        contact_cols = st.columns(2)
         idx = 0
         for disc_code, disc_cfg in DISCIPLINES.items():
             if disc_code == "MEP":
                 continue
-            with (c1 if idx % 2 == 0 else c2):
+            with contact_cols[idx % 2]:
                 emails[disc_code] = st.text_input(
                     disc_cfg["label"],
-                    value=emails.get(disc_code,""),
+                    value=emails.get(disc_code, ""),
                     placeholder=f"{disc_cfg['label'].lower().replace(' ','.')}@company.com",
                     key=f"email_{disc_code}",
                 )
@@ -1250,90 +1323,160 @@ def render_layer4_ui(layer3_result: dict):
                 "SMTP2GO_USER, SMTP2GO_PASSWORD, and SMTP2GO_FROM to Streamlit secrets."
             )
 
-        st.markdown("---")
-        prerfi_list = st.session_state.get("layer4_prerfi_list", [])
-        if not prerfi_list:
-            st.info("Generate Pre-RFIs first, then return here to route and send them.")
-            return
-
-        # Refresh assigned emails from the latest contact fields before routing.
-        for p in prerfi_list:
-            d = p["data"]
-            email_key = DISC_EMAIL_MAP.get(d.get("_discipline",""), d.get("_discipline",""))
-            d["assigned_email"] = emails.get(email_key, "")
-
-        disc_groups: dict[str, list] = {}
-        for p in prerfi_list:
-            d = p["data"]
-            email_key = DISC_EMAIL_MAP.get(d.get("_discipline",""), d.get("_discipline",""))
-            recipient = emails.get(email_key, "")
-            key = email_key if recipient else "__unassigned__"
-            disc_groups.setdefault(key, []).append(p)
-
-        st.markdown("#### Routing Preview")
-        route_rows = []
-        for key, group in disc_groups.items():
-            if key == "__unassigned__":
-                label, email_str = "Unassigned", "No email configured"
-            else:
-                label = DISCIPLINES.get(key, {}).get("label", key)
-                email_str = emails.get(key, "")
-            route_rows.append({
-                "Discipline": label,
-                "Email": email_str,
-                "Pre-RFIs": len(group),
-                "RFI Numbers": ", ".join(p["data"].get("rfi_number","") for p in group),
-            })
-        st.dataframe(pd.DataFrame(route_rows), hide_index=True, use_container_width=True)
-
-        if "__unassigned__" in disc_groups:
-            st.warning(f"{len(disc_groups['__unassigned__'])} Pre-RFI(s) have no email. Fill the relevant contact above before sending.")
+        llm_key_available = bool(_get_deepseek_key())
+        if llm_key_available and DeepSeekClient is not None:
+            st.success("LLM drafting enabled: discipline routing and narrative Pre-RFI fields will be generated with DeepSeek.")
+        else:
+            st.warning("LLM drafting key not detected. K1netix will use deterministic fallback drafting.")
 
         st.markdown("---")
-        confirm = st.checkbox("I confirm the routing above is correct and I am ready to send", key="l4_send_confirm")
-        can_send = confirm and smtp_ready and "__unassigned__" not in disc_groups
+        st.markdown("### 4. Generate Pre-RFI Workbook")
+        st.info(
+            f"Will generate **{len(actionable)}** Pre-RFI form sheet(s). "
+            "The workbook opens on the first filled form, then includes a register and evidence appendix."
+        )
 
-        if st.button("📤 Send Pre-RFIs to Specialists", type="primary", disabled=not can_send):
-            send_log = []
+        if st.button("⚙️ Generate Pre-RFIs", type="primary"):
+            prerfi_list = []
+            prog = st.progress(0)
+            status_box = st.empty()
+            template_summary = st.session_state.get("layer4_template_summary", "")
             template_bytes = st.session_state.get("layer4_template_bytes")
-            with st.spinner("Sending Pre-RFI emails..."):
-                for key, group in disc_groups.items():
-                    if key == "__unassigned__":
-                        continue
-                    recipient = emails.get(key, "")
-                    disc_label = DISCIPLINES.get(key, {}).get("label", key)
-                    subject = f"K1netix AI Pre-RFI for Review - {disc_label} - {datetime.now().strftime('%d %b %Y')}"
-                    body = _email_body(group, disc_label)
-                    group_bytes = build_xlsx_output(group, template_bytes=template_bytes)
 
-                    r = send_email(
-                        recipient, subject, body,
-                        attachment_bytes=group_bytes,
-                        attachment_name=f"K1netix_PreRFI_{disc_label.replace(' ', '_')}.xlsx",
-                    )
-                    entry = {
-                        "Discipline": disc_label,
-                        "Recipient": recipient,
-                        "Pre-RFIs": len(group),
-                        "Result": "Sent" if r["ok"] else f"Failed: {r.get('error','')}",
-                        "Timestamp": datetime.now().strftime("%d/%m/%Y %H:%M"),
-                    }
-                    send_log.append(entry)
-                    if r["ok"]:
-                        st.success(f"Sent to {disc_label} specialist: {recipient}")
-                    else:
-                        st.error(f"{disc_label} email failed: {r.get('error','')}")
+            for i, cluster in enumerate(actionable):
+                label = _s(cluster.get("cluster_label", "?"), 60)
+                status_box.info(f"Drafting and routing Pre-RFI [{i+1}/{len(actionable)}]: {label}...")
 
-            st.session_state["layer4_records"].append({
-                "project": st.session_state.get("layer4_project_name", ""),
-                "total_rfis": len(prerfi_list),
-                "send_log": send_log,
-                "timestamp": datetime.now().isoformat(),
-                "prerfi_data": [p["data"] for p in prerfi_list],
-            })
+                rfi_num = f"RFI-{datetime.now().strftime('%Y%m%d')}-{i+1:03d}"
+                data = extract_prerfi_data(
+                    cluster, rfi_num, project_name, "",
+                    project_location=project_location,
+                    project_id=project_id,
+                    bim_model_version=bim_version,
+                    clash_source_tool=clash_source,
+                )
+                data["prepared_by"] = prepared_by
+                data = enhance_prerfi_with_llm(data, cluster, template_summary)
+                data = apply_prerfi_routing(data, emails, cluster)
+                prerfi_list.append({"data": data})
+                prog.progress((i + 1) / max(len(actionable), 1))
 
-    # ── Tab 3: Records ───────────────────────────────────────────────────────
-    with tabs[2]:
+            status_box.empty()
+            st.session_state["layer4_prerfi_list"] = prerfi_list
+
+            if prerfi_list:
+                xlsx_bytes = build_xlsx_output(prerfi_list, template_bytes=template_bytes)
+                st.session_state["layer4_xlsx_bytes"] = xlsx_bytes
+                st.success(f"Generated {len(prerfi_list)} routed Pre-RFI form(s)")
+                st.download_button(
+                    "⬇️ Download Pre-RFI Workbook",
+                    data=xlsx_bytes,
+                    file_name=f"k1netix_prerfi_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                )
+
+        prerfi_list = st.session_state.get("layer4_prerfi_list", [])
+        template_bytes = st.session_state.get("layer4_template_bytes")
+        if prerfi_list:
+            # Keep routing in sync if the user changes a contact after generation.
+            for p in prerfi_list:
+                p["data"] = apply_prerfi_routing(p["data"], emails)
+            st.session_state["layer4_xlsx_bytes"] = build_xlsx_output(prerfi_list, template_bytes=template_bytes)
+
+            st.markdown("---")
+            st.markdown("### 5. Preview, Routing & Send")
+            preview_rows = []
+            for p in prerfi_list:
+                d = p["data"]
+                preview_rows.append({
+                    "RFI #": d.get("rfi_number", ""),
+                    "Route": _discipline_label(d.get("_route_discipline", "")),
+                    "Email": d.get("assigned_email", ""),
+                    "Status": d.get("compliance_status", ""),
+                    "Priority": d.get("priority_band", ""),
+                    "Primary Concern": d.get("primary_concern", "")[:90],
+                })
+            st.dataframe(pd.DataFrame(preview_rows), hide_index=True, use_container_width=True)
+
+            with st.expander("Full Pre-RFI content preview", expanded=False):
+                for p in prerfi_list:
+                    d = p["data"]
+                    st.markdown(f"#### {d.get('rfi_number','')} — {d.get('cluster_label','')}")
+                    for section_title, fields in PRE_RFI_SECTIONS:
+                        st.markdown(f"**{section_title}**")
+                        for field in fields:
+                            label = FIELD_LABELS.get(field, field)
+                            val = d.get(field, "")
+                            if val not in (None, "", []):
+                                st.markdown(f"- **{label}:** {val}")
+
+            st.download_button(
+                "⬇️ Download Updated Routed Workbook",
+                data=st.session_state["layer4_xlsx_bytes"],
+                file_name=f"k1netix_prerfi_routed_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
+
+            disc_groups = _group_prerfis_by_route(prerfi_list, emails)
+            route_rows = []
+            for key, group in disc_groups.items():
+                if key == "__unassigned__":
+                    label, email_str = "Unassigned", "No email configured"
+                else:
+                    label = _discipline_label(key)
+                    email_str = emails.get(key, "")
+                route_rows.append({
+                    "Discipline": label,
+                    "Email": email_str,
+                    "Pre-RFIs": len(group),
+                    "RFI Numbers": ", ".join(p["data"].get("rfi_number", "") for p in group),
+                })
+            st.markdown("#### Routing Preview")
+            st.dataframe(pd.DataFrame(route_rows), hide_index=True, use_container_width=True)
+
+            if "__unassigned__" in disc_groups:
+                st.warning(f"{len(disc_groups['__unassigned__'])} Pre-RFI(s) have no route email. Fill the matching contact above, then regenerate or update this page.")
+
+            confirm = st.checkbox("I confirm the routing above is correct and I am ready to send", key="l4_send_confirm")
+            can_send = confirm and smtp_ready and "__unassigned__" not in disc_groups
+            if st.button("📤 Send Pre-RFIs to Specialists", type="primary", disabled=not can_send):
+                send_log = []
+                with st.spinner("Sending Pre-RFI emails..."):
+                    for key, group in disc_groups.items():
+                        if key == "__unassigned__":
+                            continue
+                        recipient = emails.get(key, "")
+                        disc_label = _discipline_label(key)
+                        subject = f"K1netix AI Pre-RFI for Review - {disc_label} - {datetime.now().strftime('%d %b %Y')}"
+                        body = _email_body(group, disc_label)
+                        group_bytes = build_xlsx_output(group, template_bytes=template_bytes)
+                        r = send_email(
+                            recipient, subject, body,
+                            attachment_bytes=group_bytes,
+                            attachment_name=f"K1netix_PreRFI_{disc_label.replace(' ', '_')}.xlsx",
+                        )
+                        entry = {
+                            "Discipline": disc_label,
+                            "Recipient": recipient,
+                            "Pre-RFIs": len(group),
+                            "Result": "Sent" if r["ok"] else f"Failed: {r.get('error','')}",
+                            "Timestamp": datetime.now().strftime("%d/%m/%Y %H:%M"),
+                        }
+                        send_log.append(entry)
+                        if r["ok"]:
+                            st.success(f"Sent to {disc_label} specialist: {recipient}")
+                        else:
+                            st.error(f"{disc_label} email failed: {r.get('error','')}")
+
+                st.session_state["layer4_records"].append({
+                    "project": st.session_state.get("layer4_project_name", ""),
+                    "total_rfis": len(prerfi_list),
+                    "send_log": send_log,
+                    "timestamp": datetime.now().isoformat(),
+                    "prerfi_data": [p["data"] for p in prerfi_list],
+                })
+
+    with tabs[1]:
         st.markdown("### Dispatch Records")
         records = st.session_state.get("layer4_records", [])
 
@@ -1351,8 +1494,8 @@ def render_layer4_ui(layer3_result: dict):
                         st.dataframe(pd.DataFrame(log), hide_index=True, use_container_width=True)
                     data_list = rec.get("prerfi_data", [])
                     if data_list:
-                        skip = {"_cluster_id", "_discipline", "_generated_at", "_llm_drafting"}
-                        flat = [{k:v for k,v in d.items() if k not in skip} for d in data_list]
+                        skip = {"_cluster_id", "_generated_at", "_llm_drafting"}
+                        flat = [{k: v for k, v in d.items() if k not in skip} for d in data_list]
                         csv = pd.DataFrame(flat).to_csv(index=False)
                         st.download_button(
                             f"⬇️ Download Batch {len(records)-i} CSV",
