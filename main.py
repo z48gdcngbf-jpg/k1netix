@@ -884,7 +884,13 @@ def render_layer2_ui(bcf_json: dict):
                 "Classifier":  f"{ps.get('classifier_prob',0):.0%}",
             })
 
-        df_p = pd.DataFrame(rows).sort_values("Score", ascending=False)
+        if rows:
+            df_p = pd.DataFrame(rows)
+        if "Score" in df_p.columns:
+         df_p = df_p.sort_values("Score", ascending=False)
+        else:
+            df_p = pd.DataFrame()
+    
         st.dataframe(df_p, hide_index=True, use_container_width=True)
 
         st.download_button(
