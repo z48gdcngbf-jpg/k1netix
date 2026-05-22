@@ -884,16 +884,12 @@ def render_layer2_ui(bcf_json: dict):
                 "Classifier":  f"{ps.get('classifier_prob',0):.0%}",
             })
 
-        if rows:
-            df_p = pd.DataFrame(rows)
         df_p = pd.DataFrame(rows) if rows else pd.DataFrame()
         if not df_p.empty and "Score" in df_p.columns:
             df_p = df_p.sort_values("Score", ascending=False)
-        else:
-            df_p = pd.DataFrame()
-    
-        st.dataframe(df_p, hide_index=True, use_container_width=True)
 
+        st.dataframe(df_p, hide_index=True, use_container_width=True)
+    
         st.download_button(
             "⬇️  Download Layer 2 JSON",
             data=_export_json(result),
