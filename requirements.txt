@@ -3,7 +3,7 @@ pandas
 numpy
 openpyxl
 openai
-chromadb
+chromadb==0.4.24
 sentence-transformers
 pymupdf
 pdfplumber
@@ -13,4 +13,4 @@ scikit-learn
 xgboost
 hdbscan
 pysqlite3-binary
-protobuf<4
+protobuf==3.20.3
