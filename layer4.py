@@ -1209,6 +1209,8 @@ def render_layer4_ui(layer3_result: dict):
     st.markdown("## 📋 Layer 4 — Pre-RFI Generator & Router")
     st.caption("Enter contacts first → generate template-style Pre-RFIs → route and send in one workflow")
 
+    if layer3_result is None:
+        layer3_result = {}
     clusters = layer3_result.get("clusters", [])
     if not clusters:
         st.info("Run Layer 3 compliance check first to generate Pre-RFIs.")
@@ -1436,7 +1438,7 @@ def render_layer4_ui(layer3_result: dict):
                         "Email found":      emails.get(rc, "❌ not in emails dict"),
                     })
                 st.dataframe(pd.DataFrame(debug_rows), hide_index=True, use_container_width=True)
-                
+
             route_rows = []
             for key, group in disc_groups.items():
                 if key == "__unassigned__":
