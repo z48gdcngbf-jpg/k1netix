@@ -12,13 +12,9 @@ import json
 from pathlib import Path
 from typing import Optional
 
-import json
-from pathlib import Path
-from typing import Optional
-
 # ── Constants ─────────────────────────────────────────────────────────────────
 DEFAULT_COLLECTION = "k1netix_regulations"
-DEFAULT_DB_PATH    = "./chroma_db"
+DEFAULT_DB_PATH    = "/tmp/chroma_db"
 EMBEDDING_MODEL    = "all-MiniLM-L6-v2"   # ~80MB download on first run
 
 
