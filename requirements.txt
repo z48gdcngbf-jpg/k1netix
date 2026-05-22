@@ -1,6 +1,6 @@
 streamlit
-pandas
-numpy
+pandas<2.2
+numpy<2
 openpyxl
 openai
 chromadb==0.4.24
