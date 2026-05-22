@@ -13,3 +13,4 @@ scikit-learn
 xgboost
 hdbscan
 pysqlite3-binary
+protobuf<4
