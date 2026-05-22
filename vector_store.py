@@ -1,13 +1,16 @@
-from __future__ import annotations
 """
 Layer 3 — Vector Store
-ChromaDB-backed store for regulation chunks.
-Uses sentence-transformers for local embeddings (no API key needed).
-
-Embedding model: all-MiniLM-L6-v2 (fast, good quality, 384-dim)
-Swap to a larger model for higher accuracy (e.g. all-mpnet-base-v2).
 """
+from __future__ import annotations
 
+# CRITICAL: SQLite fix for Streamlit Cloud — must come before chromadb import
+__import__("pysqlite3")
+import sys as _sys
+_sys.modules["sqlite3"] = _sys.modules.pop("pysqlite3")
+
+import json
+from pathlib import Path
+from typing import Optional
 
 import json
 from pathlib import Path
