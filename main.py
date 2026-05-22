@@ -886,8 +886,9 @@ def render_layer2_ui(bcf_json: dict):
 
         if rows:
             df_p = pd.DataFrame(rows)
-        if "Score" in df_p.columns:
-         df_p = df_p.sort_values("Score", ascending=False)
+        df_p = pd.DataFrame(rows) if rows else pd.DataFrame()
+        if not df_p.empty and "Score" in df_p.columns:
+            df_p = df_p.sort_values("Score", ascending=False)
         else:
             df_p = pd.DataFrame()
     
