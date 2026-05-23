@@ -738,7 +738,7 @@ def render_layer2_ui(bcf_json: dict):
     with st.expander("⚙️ Parameters", expanded=False):
         pc1, pc2, pc3 = st.columns(3)
         with pc1:
-            noise_threshold  = st.slider("Noise threshold",    0.3, 0.8, 0.5, 0.05)
+            noise_threshold  = st.slider("Noise threshold",    0.0, 1, 0.5, 0.01)
         with pc2:
             min_cluster_size = st.slider("Min cluster size",   2, 10, 2)
         with pc3:

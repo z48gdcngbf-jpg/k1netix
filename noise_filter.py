@@ -223,7 +223,7 @@ def run(
     bcf_json: dict[str, Any],
     labeled_csv: str | None = None,
     threshold: float = 0.5,
-    retrain: bool = True,
+    retrain: bool = False,
 ) -> dict[str, Any]:
     """
     Full Layer 2 noise filter.
@@ -245,11 +245,15 @@ def run(
             labels = labels.fillna(weak)
         labels = labels.astype(int)
 
-    if retrain or not MODEL_PATH.exists():
-        model, metrics = train(df, labels=labels)
+    if MODEL_PATH.exists() and not retrain:
+        try:
+            model = load_model()
+            metrics = {"note": "loaded saved model", "backend": MODEL_BACKEND}
+        except Exception as e:
+            print(f"Saved model failed to load ({e}); retraining")
+            model, metrics = train(df, labels=labels)
     else:
-        model = load_model()
-        metrics = {"note": "loaded saved model", "backend": MODEL_BACKEND}
+            model, metrics = train(df, labels=labels)
 
     df_scored = predict(df, model=model, threshold=threshold)
 
