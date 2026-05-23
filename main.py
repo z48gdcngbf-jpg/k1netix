@@ -863,7 +863,7 @@ def render_layer2_ui(bcf_json: dict):
                 "Title":      i.get("title",""),
                 "Discipline": DISCIPLINE_LABELS.get(
                                   (i.get("_discipline") or {}).get("primary",""), "?"),
-                "Noise Prob": f"{(i.get('_noise_filter') or {}).get('noise_prob',0):.0%}",
+                "Noise Prob": f"{(i.get('_noise_filter') or {}).get('noise_prob',0):.2%}",
                 "Reason":     (i.get("_noise_filter") or {}).get("noise_reason",""),
             } for i in noise]
             st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
