@@ -1064,7 +1064,7 @@ def run_layer3(
  
     Args:
         layer2_result : output dict from layer2/pipeline.py run_layer2()
-        api_key       : DeepSeek API key
+        api_key       : input("Enter your DeepSeek API key: ").strip()
         n_clauses     : number of regulation clauses to retrieve per cluster
         jurisdiction  : filter regulations by jurisdiction (e.g. "UK", "Singapore")
  
